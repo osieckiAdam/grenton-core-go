@@ -175,7 +175,9 @@ type Switch struct {
 func (e *Switch) Info() EntityInfo                   { return e.d.EntityInfo }
 func (e *Switch) refs() []model.ValueRef             { return []model.ValueRef{e.d.State} }
 func (e *Switch) Updates() (<-chan struct{}, func()) { return e.updates(e.refs()) }
-func (e *Switch) Descriptor() SwitchDescriptor       { return e.d }
+
+// Descriptor returns the switch's references, actions and indications.
+func (e *Switch) Descriptor() SwitchDescriptor { return e.d }
 
 // IsOn reports the state; ok is false while it is unknown.
 func (e *Switch) IsOn() (on, ok bool) {

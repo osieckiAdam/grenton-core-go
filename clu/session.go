@@ -226,6 +226,7 @@ type core struct {
 	gate             gate
 
 	mu       sync.Mutex
+	closing  []Socket // retired under the mutex, closed after it
 	state    State
 	sock     *mainSocket
 	gen      int
@@ -244,6 +245,9 @@ type core struct {
 	regEpoch      int
 	pingEpoch     int
 	pingSleep     *waiter
+	pingShare     *pingShare
+
+	regSock *mainSocket // the socket the latest registration's chunks went to
 
 	pending map[string]*pendingRequest
 	token   uint64
@@ -343,7 +347,7 @@ func (c *core) start() {
 	for {
 		c.mu.Lock()
 		td := c.teardown
-		c.mu.Unlock()
+		c.unlock()
 		if td != nil {
 			td.wait() // a stop still tearing down owns the socket
 		}
@@ -352,12 +356,12 @@ func (c *core) start() {
 		if c.teardown == nil {
 			break
 		}
-		c.mu.Unlock()
+		c.unlock()
 		c.gate.release()
 	}
 	defer c.gate.release()
 	if c.state != StateIdle && c.state != StateStopped {
-		c.mu.Unlock()
+		c.unlock()
 		return
 	}
 	c.setStateLocked(StateStarting)
@@ -365,7 +369,7 @@ func (c *core) start() {
 	c.hasReply, c.hasReport, c.hasRTT, c.hasPingSent = false, false, false, false
 	c.pingTimeouts = 0
 	c.run = &sync.WaitGroup{}
-	c.mu.Unlock()
+	c.unlock()
 
 	c.ping(true)
 
@@ -373,18 +377,18 @@ func (c *core) start() {
 	if c.state != StateStopped {
 		c.startPingLoopLocked()
 	}
-	c.mu.Unlock()
+	c.unlock()
 }
 
 func (c *core) stop() {
 	c.mu.Lock()
 	if td := c.teardown; td != nil {
-		c.mu.Unlock()
+		c.unlock()
 		td.wait()
 		return
 	}
 	if c.state == StateStopped {
-		c.mu.Unlock()
+		c.unlock()
 		return
 	}
 	td := newSignal(c.t)
@@ -397,14 +401,14 @@ func (c *core) stop() {
 	// At once: what waits fails now, so an operation in flight drains
 	// instead of waiting for its timeouts.
 	c.failAllPendingLocked(ErrConnectionClosed)
-	c.mu.Unlock()
+	c.unlock()
 
 	c.gate.acquire() // the operation in flight finishes first
 	c.mu.Lock()
 	numbers := sortedNumbers(c.subs)
 	c.subs, c.chunks, c.hasDeadline = map[int64][]model.ValueRef{}, nil, false
 	ms := c.sock
-	c.mu.Unlock()
+	c.unlock()
 	if ms != nil {
 		// Destroys go out only behind a drained queue, and the socket closes
 		// after at most a response timeout either way (spec §5.4.1 item 3).
@@ -416,13 +420,13 @@ func (c *core) stop() {
 		if c.sock == ms {
 			c.closeSocketLocked()
 		}
-		c.mu.Unlock()
+		c.unlock()
 	}
 	c.gate.release()
 	run.Wait() // loops and senders end: nothing of the session remains
 	c.mu.Lock()
 	c.teardown = nil
-	c.mu.Unlock()
+	c.unlock()
 	td.fire()
 }
 
@@ -430,7 +434,7 @@ func (c *core) stop() {
 // socket and the loops end, the CLU's subscriptions simply expire.
 func (c *core) abandon() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.state == StateStopped {
 		return
 	}
@@ -479,11 +483,11 @@ func (r sockReceiver) Closed(err error)     { r.c.socketFailed(r.gen, err) }
 func (c *core) ensureSocket() {
 	c.mu.Lock()
 	if c.sock != nil || c.state == StateStopped {
-		c.mu.Unlock()
+		c.unlock()
 		return
 	}
 	if sig := c.opening; sig != nil {
-		c.mu.Unlock()
+		c.unlock()
 		sig.wait()
 		return
 	}
@@ -491,7 +495,7 @@ func (c *core) ensureSocket() {
 	c.opening = sig
 	c.gen++
 	gen := c.gen
-	c.mu.Unlock()
+	c.unlock()
 
 	s, err := c.transport.Open(c.clu.IP, int(c.clu.Port), sockReceiver{c, gen})
 
@@ -510,29 +514,40 @@ func (c *core) ensureSocket() {
 		c.spawnLocked(func() { ms.out.run(s) })
 		c.log.Debug("opened the UDP socket")
 	}
-	c.mu.Unlock()
+	c.unlock()
 	sig.fire()
 }
 
+// closeSocketLocked retires the main socket; its Close runs in unlock,
+// after the mutex is released, because a transport may wait in Close for
+// its reader, and the reader takes the mutex (spec §5.6 item 4).
 func (c *core) closeSocketLocked() {
 	ms := c.sock
 	c.sock = nil
 	ms.out.close()
-	ms.s.Close()
+	c.closing = append(c.closing, ms.s)
+}
+
+// unlock releases the mutex, then closes the sockets retired under it.
+func (c *core) unlock() {
+	closing := c.closing
+	c.closing = nil
+	c.mu.Unlock()
+	for _, s := range closing {
+		s.Close()
+	}
 }
 
 // socketFailed: the transport lost the socket outside Stop (§5.4.1 item 4).
 func (c *core) socketFailed(gen int, err error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.state == StateStopped || c.sock == nil || c.sock.gen != gen {
 		return
 	}
 	c.log.Warn("the UDP socket failed", "err", err)
 	c.failAllPendingLocked(ErrConnectionClosed)
-	ms := c.sock
-	c.sock = nil
-	ms.out.close()
+	c.closeSocketLocked()
 	c.setStateLocked(StateDegraded)
 	c.needsRecovery = c.needsRecovery || len(c.desired) > 0
 }
@@ -560,17 +575,17 @@ func (c *core) request(ms *mainSocket, payload, msgID string) (wire.Response, er
 	c.mu.Lock()
 	switch {
 	case c.state == StateStopped || c.sock != ms:
-		c.mu.Unlock()
+		c.unlock()
 		return wire.Response{}, ErrConnectionClosed
 	case c.pending[id] != nil:
-		c.mu.Unlock()
+		c.unlock()
 		return wire.Response{}, errDuplicateID
 	}
 	c.token++
 	token := c.token
 	w := newWaiter(c.t)
 	c.pending[id] = &pendingRequest{token: token, w: w}
-	c.mu.Unlock()
+	c.unlock()
 
 	// The deadline counts from handing the datagram over and bounds the
 	// whole attempt, also a send that never completes.
@@ -579,7 +594,7 @@ func (c *core) request(ms *mainSocket, payload, msgID string) (wire.Response, er
 	ms.out.push(sendItem{data: data,
 		before: func() bool {
 			c.mu.Lock()
-			defer c.mu.Unlock()
+			defer c.unlock()
 			if p := c.pending[id]; p == nil || p.token != token || c.state == StateStopped {
 				return false // ended before it went out: nothing is sent
 			}
@@ -590,7 +605,10 @@ func (c *core) request(ms *mainSocket, payload, msgID string) (wire.Response, er
 		},
 		after: func(err error) {
 			if err != nil {
-				c.failPending(id, token, err)
+				// A socket that cannot send has failed (spec §5.4.1 item
+				// 4): it is replaced, and the request ends as closed.
+				c.socketFailed(ms.gen, err)
+				c.failPending(id, token, ErrConnectionClosed)
 			}
 		}})
 	r := w.wait().(reply)
@@ -600,7 +618,7 @@ func (c *core) request(ms *mainSocket, payload, msgID string) (wire.Response, er
 
 func (c *core) failPending(id string, token uint64, err error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if p := c.pending[id]; p != nil && p.token == token {
 		delete(c.pending, id)
 		p.w.fire(reply{err: err})
@@ -617,7 +635,7 @@ func (c *core) failAllPendingLocked(err error) {
 // handleDatagram is the single reader of the socket (spec §5.4.1, §5.4.3).
 func (c *core) handleDatagram(gen int, data []byte) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.state == StateStopped || c.sock == nil || c.sock.gen != gen {
 		return // stopped, or a socket that was replaced: dropped whole
 	}
@@ -698,51 +716,81 @@ func allFailed(slots []Slot) bool {
 
 // Ping and recovery (spec §5.3.1, §5.4.5).
 
+// pingShare is the ping on the wire; callers that come while it is in
+// flight wait for it and share its result (spec §5.4.5 counts it once).
+type pingShare struct {
+	done *signal
+	ok   bool
+}
+
 func (c *core) ping(gateHeld bool) bool {
 	c.mu.Lock()
+	if share := c.pingShare; share != nil {
+		c.unlock()
+		share.done.wait()
+		return share.ok
+	}
+	if c.state == StateStopped || c.state == StateIdle {
+		c.unlock()
+		return false
+	}
+	share := &pingShare{done: newSignal(c.t)}
+	c.pingShare = share
+	c.unlock()
+	ok := c.pingOnce(gateHeld)
+	c.mu.Lock()
+	share.ok = ok
+	c.pingShare = nil
+	c.unlock()
+	share.done.fire()
+	return ok
+}
+
+func (c *core) pingOnce(gateHeld bool) bool {
+	c.mu.Lock()
 	if c.state == StateStopped || c.state == StateIdle || c.pending[c.keepAlive] != nil {
-		c.mu.Unlock()
+		c.unlock()
 		return false
 	}
 	if c.sock == nil {
 		// A degraded session without a socket opens one first.
-		c.mu.Unlock()
+		c.unlock()
 		c.ensureSocket()
 		c.mu.Lock()
 	}
 	ms := c.sock
 	switch {
 	case c.state == StateStopped || c.pending[c.keepAlive] != nil:
-		c.mu.Unlock()
+		c.unlock()
 		return false
 	case ms == nil:
 		c.setStateLocked(StateDegraded)
 		c.needsRecovery = c.needsRecovery || len(c.desired) > 0
-		c.mu.Unlock()
+		c.unlock()
 		return false
 	}
-	c.mu.Unlock()
+	c.unlock()
 
 	_, err := c.request(ms, wire.CheckAlive, c.keepAlive)
 
 	c.mu.Lock()
 	if c.state == StateStopped || c.sock != ms || errors.Is(err, errDuplicateID) {
-		c.mu.Unlock()
+		c.unlock()
 		return false // a reply on a socket that is gone says nothing about the current one
 	}
 	if err == nil {
 		c.pingTimeouts = 0
 		if c.needsRecovery && len(c.desired) > 0 {
-			c.mu.Unlock()
+			c.unlock()
 			c.recover(gateHeld)
 			c.mu.Lock()
 			if c.state == StateStopped || c.sock != ms {
-				c.mu.Unlock()
+				c.unlock()
 				return false
 			}
 		}
 		c.setStateLocked(StateReady)
-		c.mu.Unlock()
+		c.unlock()
 		return true
 	}
 	c.log.Warn("ping failed", "err", err)
@@ -754,7 +802,7 @@ func (c *core) ping(gateHeld bool) bool {
 			c.abandonSocketLocked()
 		}
 	}
-	c.mu.Unlock()
+	c.unlock()
 	return false
 }
 
@@ -766,14 +814,14 @@ func (c *core) recover(gateHeld bool) {
 	}
 	c.mu.Lock()
 	if c.state == StateStopped || !c.needsRecovery || len(c.desired) == 0 {
-		c.mu.Unlock()
+		c.unlock()
 		return
 	}
-	keys, ms := c.desired, c.sock
-	c.mu.Unlock()
+	keys := c.desired
+	c.unlock()
 	slots := c.registerLocked(keys, true)
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.state == StateStopped {
 		return
 	}
@@ -782,7 +830,7 @@ func (c *core) recover(gateHeld bool) {
 		return
 	}
 	// A partial failure keeps the flag; so does a socket lost meanwhile.
-	c.needsRecovery = anyFailed(slots) || c.sock != ms
+	c.needsRecovery = anyFailed(slots) || c.sock != c.regSock
 }
 
 // Registration (spec §5.4.2).
@@ -792,19 +840,18 @@ func (c *core) register(keys []model.ValueRef) []Slot {
 	defer c.gate.release()
 	c.mu.Lock()
 	if c.state == StateStopped || c.state == StateIdle {
-		c.mu.Unlock()
+		c.unlock()
 		return failedSlots(len(keys))
 	}
 	c.desired = slices.Clone(keys)
-	ms := c.sock
-	c.mu.Unlock()
+	c.unlock()
 	slots := c.registerLocked(keys, false)
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.state == StateStopped {
 		return slots
 	}
-	c.needsRecovery = len(keys) > 0 && (anyFailed(slots) || c.sock != ms)
+	c.needsRecovery = len(keys) > 0 && (anyFailed(slots) || c.sock != c.regSock)
 	c.scheduleRenewalLocked()
 	return slots
 }
@@ -816,23 +863,27 @@ func (c *core) registerLocked(keys []model.ValueRef, publish bool) []Slot {
 	c.mu.Lock()
 	c.hasDeadline = false
 	if c.state == StateStopped {
-		c.mu.Unlock()
+		c.unlock()
 		return failedSlots(len(keys))
 	}
 	if len(keys) == 0 {
+		c.regSock = c.sock
 		c.needsRecovery = false
 		numbers := sortedNumbers(c.subs)
 		c.chunks = nil
-		c.mu.Unlock()
+		c.unlock()
 		c.destroy(numbers)
 		return []Slot{}
 	}
 	lists := wire.RegisterChunks(keys, c.frameLimit)
 	if c.next-1+int64(len(lists)-c.keptLocked(lists)) > maxNumber {
-		c.mu.Unlock()
+		c.unlock()
 		c.restartNumbering()
 		c.mu.Lock()
 	}
+	// A socket replaced by the rollover is the registration's own; one lost
+	// after this point leaves the subscriptions behind.
+	c.regSock = c.sock
 	// A chunk keeps its number only while its key list is identical, so a
 	// late notification of an old list never lands on new keys.
 	plan := make([]chunk, len(lists))
@@ -844,7 +895,7 @@ func (c *core) registerLocked(keys []model.ValueRef, publish bool) []Slot {
 			c.next++
 		}
 	}
-	c.mu.Unlock()
+	c.unlock()
 
 	// One chunk at a time: CLUs drop registrations sent back to back.
 	results := make([]Slot, 0, len(keys))
@@ -859,12 +910,12 @@ func (c *core) registerLocked(keys []model.ValueRef, publish bool) []Slot {
 				c.publishLocked(Report{Keys: ch.keys, Slots: slots})
 			}
 		}
-		c.mu.Unlock()
+		c.unlock()
 	}
 
 	c.mu.Lock()
 	if c.state == StateStopped {
-		c.mu.Unlock()
+		c.unlock()
 		return results // stop destroys them
 	}
 	c.chunks = plan
@@ -878,7 +929,7 @@ func (c *core) registerLocked(keys []model.ValueRef, publish bool) []Slot {
 			stale = append(stale, n)
 		}
 	}
-	c.mu.Unlock()
+	c.unlock()
 	c.destroy(stale)
 	return results
 }
@@ -897,7 +948,7 @@ func (c *core) registerChunk(ch chunk) []Slot {
 	c.mu.Lock()
 	ms := c.sock
 	if c.state == StateStopped || ms == nil {
-		c.mu.Unlock()
+		c.unlock()
 		return failedSlots(len(ch.keys))
 	}
 	// Remembered from the moment it is sent: the CLU may accept it even
@@ -906,7 +957,7 @@ func (c *core) registerChunk(ch chunk) []Slot {
 	if !c.hasDeadline {
 		c.deadline, c.hasDeadline = c.clock.Now().Add(c.registerInterval), true
 	}
-	c.mu.Unlock()
+	c.unlock()
 	resp, err := c.request(ms, wire.ClientRegister(ch.number, ch.keys), c.newID())
 	if err != nil {
 		c.log.Warn("registration failed", "subscription", ch.number, "err", err)
@@ -928,7 +979,7 @@ func (c *core) destroy(numbers []int64) {
 		delete(c.subs, n)
 	}
 	ms := c.sock
-	c.mu.Unlock()
+	c.unlock()
 	if ms != nil {
 		c.sendDestroys(ms, numbers)
 	}
@@ -952,7 +1003,7 @@ func (c *core) restartNumbering() {
 	c.mu.Lock()
 	numbers := sortedNumbers(c.subs)
 	ms := c.sock
-	c.mu.Unlock()
+	c.unlock()
 	c.destroy(numbers)
 	if ms != nil {
 		ms.out.drain(c.clock, c.timeout)
@@ -963,7 +1014,7 @@ func (c *core) restartNumbering() {
 	if c.sock != nil {
 		c.closeSocketLocked()
 	}
-	c.mu.Unlock()
+	c.unlock()
 	c.ensureSocket()
 }
 
@@ -974,7 +1025,7 @@ func (c *core) fetch(keys []model.ValueRef) []Slot {
 	defer c.gate.release()
 	c.mu.Lock()
 	ready := c.state != StateStopped && c.sock != nil
-	c.mu.Unlock()
+	c.unlock()
 	if !ready {
 		return failedSlots(len(keys))
 	}
@@ -989,7 +1040,7 @@ func (c *core) fetchChunk(keys []model.ValueRef) []Slot {
 	c.mu.Lock()
 	ms := c.sock
 	stopped := c.state == StateStopped
-	c.mu.Unlock()
+	c.unlock()
 	if stopped || ms == nil {
 		return failedSlots(len(keys))
 	}
@@ -1012,7 +1063,7 @@ func (c *core) execute(a model.ActionRef) error {
 	c.mu.Lock()
 	ms := c.sock
 	stopped := c.state == StateStopped
-	c.mu.Unlock()
+	c.unlock()
 	if stopped || ms == nil {
 		return ErrNotConnected
 	}
@@ -1040,17 +1091,17 @@ func (c *core) startPingLoopLocked() {
 func (c *core) sleepPing(epoch int) bool {
 	c.mu.Lock()
 	if c.state == StateStopped || epoch != c.pingEpoch {
-		c.mu.Unlock()
+		c.unlock()
 		return false
 	}
 	w := newWaiter(c.t)
 	c.pingSleep = w
-	c.mu.Unlock()
+	c.unlock()
 	timer := c.clock.AfterFunc(c.pingInterval, func() { w.fire(true) })
 	woke := w.wait() == true
 	timer.Stop()
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.pingSleep == w {
 		c.pingSleep = nil
 	}
@@ -1075,7 +1126,7 @@ func (c *core) scheduleRenewalLocked() {
 	epoch := c.regEpoch
 	c.regTimer = c.clock.AfterFunc(d, func() {
 		c.mu.Lock()
-		defer c.mu.Unlock()
+		defer c.unlock()
 		if epoch == c.regEpoch {
 			c.spawnLocked(func() { c.renew(epoch) })
 		}
@@ -1088,25 +1139,25 @@ func (c *core) renew(epoch int) {
 	defer c.gate.release()
 	c.mu.Lock()
 	if c.state == StateStopped || len(c.desired) == 0 || epoch != c.regEpoch {
-		c.mu.Unlock()
+		c.unlock()
 		return // stopped, or another registration rescheduled the loop
 	}
 	if c.state == StateDegraded {
 		// No renewal while degraded: the deadline is forfeited, and the
 		// recovery after the next answered ping registers anyway.
 		c.hasDeadline = false
-		c.mu.Unlock()
+		c.unlock()
 		return
 	}
-	keys, ms := c.desired, c.sock
-	c.mu.Unlock()
+	keys := c.desired
+	c.unlock()
 	slots := c.registerLocked(keys, true)
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.state == StateStopped {
 		return
 	}
-	c.needsRecovery = anyFailed(slots) || c.sock != ms
+	c.needsRecovery = anyFailed(slots) || c.sock != c.regSock
 	c.scheduleRenewalLocked()
 }
 
@@ -1118,11 +1169,11 @@ func (c *core) subscribe() (<-chan Report, func()) {
 	id := c.subID
 	c.subID++
 	c.reportSubs[id] = ch
-	c.mu.Unlock()
+	c.unlock()
 	return ch, func() {
 		c.mu.Lock()
 		delete(c.reportSubs, id)
-		c.mu.Unlock()
+		c.unlock()
 	}
 }
 
@@ -1154,17 +1205,17 @@ func (c *core) subscribeState() (<-chan struct{}, func()) {
 	id := c.subID
 	c.subID++
 	c.stateSubs[id] = ch
-	c.mu.Unlock()
+	c.unlock()
 	return ch, func() {
 		c.mu.Lock()
 		delete(c.stateSubs, id)
-		c.mu.Unlock()
+		c.unlock()
 	}
 }
 
 func (c *core) diagnostics() Diagnostics {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	now := c.clock.Now()
 	d := Diagnostics{State: c.state, SampledAt: now, RequestedKeys: len(c.desired), RecoveryPending: c.needsRecovery,
 		ConsecutivePingTimeouts: c.pingTimeouts}

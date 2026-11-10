@@ -141,3 +141,50 @@ reset, …) were checked against it.
 activity count over every park point of the session), with the 200 ms
 window as the fallback. It also belongs in `docs/implementing.md` under
 "The session barrier".
+
+## 11. §5.4.1 item 4 / §5.4.5: a send that fails at once
+
+**Problem.** The three-ping rule counts *timeouts*, and its reason is a
+transport whose sends never complete. A transport whose sends fail at once
+(EADDRNOTAVAIL after the host's address changed) is not covered: a port
+that passes the send error through never replaces the socket, stays
+degraded for good, and returns an error outside §8 from `execute`.
+
+**Swift.** The send error fails the request (`sendRequest`'s task calls
+`failPending` with it), like the Go port did before review.
+
+**Go.** A send error is a failure of the socket (§5.4.1 item 4): the
+socket is retired, the session degrades, the request ends with
+`connectionClosed`, and the next ping opens a new socket.
+
+**Proposal.** Add to §5.4.1 item 4: "a send the transport rejects is a
+failure of the socket". A scenario step `{"failSend": "@s"}` (the
+transport rejects the next send) would make it testable.
+
+## 12. §5.4.5: concurrent pings
+
+**Problem.** "counted once regardless of the number of callers waiting on
+it" implies that callers share one attempt. Swift (and Go before review)
+returned `false` at once to a second caller while a ping was in flight,
+which an application reading `ping()` as "the home answers" sees as a
+false failure every few seconds.
+
+**Go.** A second caller waits for the ping on the wire and returns its
+result; nothing more is sent.
+
+**Proposal.** State it, and add a scenario: two `ping` calls, one
+`checkAlive()` sent, one reply, both `{"ok": true}`.
+
+## 13. §7.1: may a socket's close wait for its reader?
+
+**Problem.** Many transports join their read goroutine or thread in
+`close()`. A session that closes its socket while holding its own lock,
+while the reader waits for that lock to deliver a datagram, deadlocks. The
+contract does not say which side must avoid it.
+
+**Go.** The session never calls `Close` while holding its mutex
+(`docs/grenton-core-go-port.md` §5).
+
+**Proposal.** In §7.1: "`close()` may wait for a delivery in progress; the
+session never closes a socket while a delivery could be waiting for it",
+and the same lesson in `docs/implementing.md`.
