@@ -41,7 +41,7 @@ func ParseArchive(data []byte) (*model.Interface, error) {
 		if !f.Mode().IsRegular() {
 			return nil, invalidData("%s is not a regular file", interfaceEntry)
 		}
-		raw, err := readEntry(f, ArchiveLimit)
+		raw, err := r.readEntry(f, ArchiveLimit)
 		if err != nil {
 			return nil, err
 		}

@@ -9,6 +9,11 @@ import (
 	"unicode/utf16"
 )
 
+// maxElements bounds a document's elements: the tree costs far more memory
+// than the bytes it came from, and real system.xml files have well under a
+// million (spec feedback §4).
+const maxElements = 1_000_000
+
 // xmlElement is a parsed element: the minimal tree §4.5 reads.
 type xmlElement struct {
 	name     string
@@ -54,6 +59,7 @@ func parseXML(data []byte) (*xmlDoc, error) {
 	}
 	doc := &xmlDoc{byID: map[string]*xmlElement{}, resolved: map[*xmlElement]*xmlElement{}}
 	var stack []*xmlElement
+	elements := 0
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -69,6 +75,9 @@ func parseXML(data []byte) (*xmlDoc, error) {
 			}
 			return nil, invalidData("xml: a markup declaration")
 		case xml.StartElement:
+			if elements++; elements > maxElements {
+				return nil, invalidData("xml: more than %d elements", maxElements)
+			}
 			e := &xmlElement{name: t.Name.Local, attrs: map[string]string{}}
 			for _, a := range t.Attr {
 				e.attrs[a.Name.Local] = a.Value

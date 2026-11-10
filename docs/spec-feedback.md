@@ -48,3 +48,68 @@ library). Any other declared encoding is `invalidData`.
 
 **Proposal.** Name the set: UTF-8 and UTF-16 must be read; any other
 encoding is `invalidData`. Object Manager writes UTF-8.
+
+## 4. §4.5.1 item 3: a byte limit does not bound memory
+
+**Problem.** The limits count bytes. A parsed tree costs far more: an
+independent review measured 763 MB live heap for 16 MiB of `<a/>`, about
+48× the inflated size; `[{},{},…]` in a node is similar. At the allowed
+64 MiB that is gigabytes from a 64 KB file.
+
+**Go.** At most 1 000 000 XML elements per document and 2 000 000 JSON
+values per node, else `invalidData`.
+
+**Proposal.** Add a recommended element/value limit next to the byte
+limits, so that every port bounds memory the same way.
+
+## 5. §4.3 item 5: "its headers" includes the local header, and a CRC of 0
+
+**Problem.** The oracle and Python's `zipfile` check the central directory
+only; the `lie` fixtures change both headers. A ZIP library may also skip a
+declared CRC of 0 (Go's `archive/zip` does). Neither case has a fixture,
+so a port that relies on its library passes while accepting both.
+
+**Go.** Checks size and CRC against the central and the local header
+(unless the entry has a data descriptor), and computes the CRC itself.
+
+**Proposal.** Keep the rule, add fixtures `local-header-lies` and
+`zero-crc`.
+
+## 6. §6.3.13: the oracle's rule row accepts extra quoted fields
+
+**Problem.** The spec says a row is exactly three fields. The oracle
+(`parse_row`) takes the text from the first to the **last** quote, so
+`{{1, 1, "0 20 * * *", "x"}}` is a rule with cron `0 20 * * *", "x` and
+`{{1, 1, "0 20 "a" * *"}}` a rule with an embedded quote. No case covers
+it (`reject-trailing-field` uses an unquoted `5`).
+
+**Go.** Follows the text: the cron text ends at the next quote, and such
+rows make the list unknown (`nil`).
+
+**Proposal.** Fix the oracle and add the two inputs as `schedule.rules`
+cases. Also say whether "space-separated" means one space or any
+whitespace; Go and the oracle split on any whitespace.
+
+## 7. §4.5.5: an empty `serialNumber` on an intermediate object
+
+**Problem.** The CLU ancestor is "the nearest ancestor whose object has
+`serialNumber` and `ipAddress`", and §4.5.1 item 7 says an empty element is
+a missing field. The oracle tests that the elements exist, so an object with
+`<serialNumber/>` and an IP hides the real CLU, and the Push entries below it
+are skipped.
+
+**Go.** Follows item 7: an empty field does not make an ancestor.
+
+**Proposal.** Say "non-empty" explicitly in §4.5.5, fix the oracle, add a
+fixture.
+
+## 8. §10 item 3: precision is unbounded
+
+**Problem.** `precision` comes from `data.json` as any integer. Python's
+`round` returns at once for huge values; an exact implementation in another
+language may allocate without bound.
+
+**Go.** Beyond ±400 places, the value itself (or a signed zero).
+
+**Proposal.** Note that `|precision| > 400` behaves as Python does, or
+reject a widget whose precision is outside, say, −20…20.

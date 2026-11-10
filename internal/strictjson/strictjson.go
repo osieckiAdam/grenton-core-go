@@ -21,6 +21,10 @@ import (
 // about ten levels).
 const MaxDepth = 64
 
+// MaxValues bounds the values of one document: a decoded tree costs far
+// more memory than its text (spec feedback §4).
+const MaxValues = 2_000_000
+
 // ErrInvalid is every parse error.
 var ErrInvalid = errors.New("invalid strict JSON")
 
@@ -54,9 +58,10 @@ type frame struct {
 }
 
 type parser struct {
-	s     []byte
-	i     int
-	stack []*frame
+	s      []byte
+	i      int
+	stack  []*frame
+	values int
 }
 
 func (p *parser) space() {
@@ -76,6 +81,9 @@ func (p *parser) value() (any, error) {
 		p.space()
 		if p.i >= len(p.s) {
 			return nil, invalid("unexpected end")
+		}
+		if p.values++; p.values > MaxValues {
+			return nil, invalid("more than %d values", MaxValues)
 		}
 		var v any
 		switch c := p.s[p.i]; {

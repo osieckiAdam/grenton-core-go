@@ -58,7 +58,7 @@ func OpenProject(data []byte) (*Project, error) {
 	}
 	var total int64
 	read := func(f *zip.File) ([]byte, error) {
-		raw, err := readEntry(f, ProjectLimit)
+		raw, err := r.readEntry(f, ProjectLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -348,11 +348,16 @@ func (p *Project) pushNotifications() ([]any, error) {
 					out = append(out, entry)
 				}
 			}
-			if obj.child("serialNumber") != nil && obj.child("ipAddress") != nil {
-				text, err := p.system.text(obj, "serialNumber")
-				if err != nil {
-					return nil, err
-				}
+			// An empty field is a missing one (§4.5.1 item 7).
+			text, err := p.system.text(obj, "serialNumber")
+			if err != nil {
+				return nil, err
+			}
+			ip, err := p.system.text(obj, "ipAddress")
+			if err != nil {
+				return nil, err
+			}
+			if text != "" && ip != "" {
 				if serial, ok := hexNumber(text); ok {
 					here = &serial
 				} else {

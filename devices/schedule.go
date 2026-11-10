@@ -84,8 +84,16 @@ func parseRuleRow(row string) (ScheduleRule, bool) {
 		return ScheduleRule{}, false
 	}
 	inner := row[1 : len(row)-1]
-	q1, q2 := strings.IndexByte(inner, '"'), strings.LastIndexByte(inner, '"')
-	if q1 < 0 || q2 <= q1 || strings.Trim(inner[q2+1:], scheduleSpace) != "" {
+	// Exactly three fields: the text ends at the next quote, and only
+	// whitespace may follow it (an extra or embedded quote is another shape).
+	q1 := strings.IndexByte(inner, '"')
+	q2 := -1
+	if q1 >= 0 {
+		if n := strings.IndexByte(inner[q1+1:], '"'); n >= 0 {
+			q2 = q1 + 1 + n
+		}
+	}
+	if q1 < 0 || q2 < 0 || strings.Trim(inner[q2+1:], scheduleSpace) != "" {
 		return ScheduleRule{}, false
 	}
 	head := strings.Split(inner[:q1], ",")

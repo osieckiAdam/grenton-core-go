@@ -89,6 +89,14 @@ func Round(v float64, precision int) float64 {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return v
 	}
+	// Beyond ±400 places the result is v itself or a zero, as in Python;
+	// the cap keeps an absurd precision from data.json from costing memory.
+	switch {
+	case precision > 400:
+		return v
+	case precision < -400:
+		return math.Copysign(0, v)
+	}
 	exact := new(big.Rat).SetFloat64(v)
 	scale := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(abs(precision))), nil))
 	if precision >= 0 {
