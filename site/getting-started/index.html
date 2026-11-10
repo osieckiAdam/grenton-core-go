@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting Started · Grenton Core for Go</title>
+  <meta name="description" content="From a fresh clone to switching a light in five steps, then the library in your own program.">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="brand" href="../">Grenton <span>Core</span><em class="lang" title="Go implementation">Go</em></a>
+      <nav class="main" aria-label="Main">
+        <a href="../getting-started/" aria-current="page">Getting Started</a>
+        <a href="https://pkg.go.dev/github.com/osieckiAdam/grenton-core-go">API Reference</a>
+        <a class="github" href="https://github.com/osieckiAdam/grenton-core-go" title="Grenton Core for Go on GitHub" aria-label="Grenton Core for Go on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="article">
+    <h1>Getting Started</h1>
+    <p class="lead">From a fresh clone of the Go implementation to switching a light, in five steps, then the same in your own program. You need Go 1.26 or later on Linux, macOS or Windows, on the same network as your CLUs, and Grenton Object Manager for the first download.</p>
+
+    <h2><span class="step">1</span>Clone</h2>
+<pre><code>git clone https://github.com/osieckiAdam/grenton-core-go.git
+cd grenton-core-go</code></pre>
+    <p>There is no separate build step: every <code>go run</code> below compiles the example and starts it. The library uses the standard library only, so nothing is downloaded.</p>
+
+    <h2><span class="step">2</span>Find the IP address and PIN</h2>
+    <p>In Object Manager, select the <strong>mobile interface</strong> (<em>Interfejs mobilny</em>) in the tree on the left and click <strong>Send to mobile devices</strong> (<em>Wyślij na urządzenia mobilne</em>). The dialog shows, top to bottom, the <strong>IP address</strong> of the computer running Object Manager, the <strong>port</strong>, and the <strong>token</strong>: your PIN.</p>
+    <img src="../assets/om-send-to-mobile.png" alt="Object Manager’s “send to mobile device” dialog: IP address, port and token, top to bottom" width="912" height="640" loading="lazy">
+    <p>The screenshot hides the address and port; your dialog shows them above the token. Keep the dialog open for the next step.</p>
+
+    <h2><span class="step">3</span>Download the interface</h2>
+<pre><code>go run ./examples/fetch-interface 192.168.1.50 dist/interface.zip 149 853</code></pre>
+    <p>Type the PIN as the dialog shows it, space included. If the port is not 9998, append it to the address: <code>192.168.1.50:9999</code>. The saved file lets every next step run without a PIN.</p>
+    <div class="note warn">The file holds the encryption key of your CLUs. Keep it private, like a password; it is written readable by you only, and <code>dist/</code> is git-ignored.</div>
+    <p>Without a PIN, the project file saved in Object Manager (<code>.omp</code>) works too: <code>go run ./examples/import-project house.omp</code> reads the interface and lists the devices.</p>
+
+    <h2><span class="step">4</span>List your devices</h2>
+<pre><code>go run ./examples/list-devices dist/interface.zip</code></pre>
+    <p>This works offline. Each device lists its entities by id and name:</p>
+<pre><code>switch "Living room ceiling" — page SALON
+  k3Xq9TzA_0: Living room ceiling</code></pre>
+    <p>At the end you also see the hardware shown by several widgets, such as a thermostat that appears on two pages under two names.</p>
+
+    <h2><span class="step">5</span>Watch and control</h2>
+    <p>See every entity's live state, then the changes as they happen. This is read-only:</p>
+<pre><code>go run ./examples/watch-state dist/interface.zip 30</code></pre>
+    <p>Turn a light on and off with an id from step 4. This changes your house; the example waits for the CLU to confirm:</p>
+<pre><code>go run ./examples/switch-light dist/interface.zip k3Xq9TzA_0 on
+go run ./examples/switch-light dist/interface.zip k3Xq9TzA_0 off</code></pre>
+    <div class="note">On macOS, run these from Terminal.app: local-network privacy silently blocks UDP for programs started from an editor's terminal, unless you allow the editor in System Settings → Privacy &amp; Security → Local Network. On Linux and Windows the firewall must allow inbound UDP to the program (Windows asks on the first run). A CLU with several network interfaces may answer from another address: add <code>-any-source</code> to <code>watch-state</code>.</div>
+
+    <h2 id="use-the-library">Use the library in your program</h2>
+    <p>Add the module to your own Go module:</p>
+<pre><code>go get github.com/osieckiAdam/grenton-core-go@v0.15.0</code></pre>
+    <p>A <code>devices.System</code> runs the whole installation: one session per CLU, the state they push, and every device of the interface. Make it from Object Manager (while its dialog is open), start it, and control an entity by the id <code>list-devices</code> printed. Subscribe before you send, so the confirmation cannot be missed:</p>
+<pre><code class="language-go">sys, err := grenton.FromObjectManager(ctx, "192.168.1.50", "149 853", devices.SystemConfig{})
+if err != nil {
+	log.Fatal(err)
+}
+sys.Start() // returns when every CLU has answered or timed out
+defer sys.Stop()
+
+lamp, ok := sys.Entity("k3Xq9TzA_0").(*devices.Switch)
+if !ok {
+	log.Fatal("no switch k3Xq9TzA_0")
+}
+updates, cancel := lamp.Updates() // a flag: read the getters when it fires
+defer cancel()
+if err := lamp.TurnOn(); err != nil {
+	log.Fatal(err)
+}
+&lt;-updates
+on, known := lamp.IsOn()
+fmt.Println("on:", on, "known:", known)</code></pre>
+    <p>Every later start can skip Object Manager: save the archive once (as <code>fetch-interface</code> does) and start from it, or read the project file:</p>
+<pre><code class="language-go">project, err := os.ReadFile("house.omp")
+if err != nil {
+	log.Fatal(err)
+}
+// "" takes the project's only interface.
+sys, err := grenton.FromProject(project, "", devices.SystemConfig{})
+if err != nil {
+	log.Fatal(err)
+}
+sys.Start()
+defer sys.Stop()
+for _, d := range sys.Devices() {
+	fmt.Println(d.Kind, d.Name)
+}</code></pre>
+    <p>Entities are the types of package <code>devices</code> (<code>*devices.Switch</code>, <code>*devices.DimmableLight</code>, <code>*devices.Cover</code>, <code>*devices.Thermostat</code>, …). Their getters read the pushed state and never block on the network; their intents send a command and wait for the CLU's reply. <code>System.Stop</code> ends every socket, timer and goroutine.</p>
+
+    <h2>Next</h2>
+    <ul>
+      <li><a href="https://pkg.go.dev/github.com/osieckiAdam/grenton-core-go">API reference on pkg.go.dev</a>: every package, type and method.</li>
+      <li><a href="https://github.com/osieckiAdam/grenton-core-go/tree/main/examples">All examples</a>, including <code>run-scene</code> and <code>set-thermostat</code>.</li>
+      <li><a href="https://github.com/osieckiAdam/grenton-core-spec">The specification</a>: what every implementation does, and why.</li>
+    </ul>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      <span>The Go implementation of the Grenton Core specification. An independent project, not affiliated with Grenton.</span>
+      <span><a href="https://github.com/osieckiAdam/grenton-core-spec">Specification</a> · <a href="https://github.com/osieckiAdam/grenton-core-go">Go implementation</a> · <a href="https://pkg.go.dev/github.com/osieckiAdam/grenton-core-go">pkg.go.dev</a></span>
+    </div>
+  </footer>
+</body>
+</html>

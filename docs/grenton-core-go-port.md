@@ -175,7 +175,13 @@ the runner controls the exact response bytes and counts requests.
 `go doc` comments on every exported identifier, checked by a test that
 walks the AST of the public packages. `Example*` functions are compiled and
 (where they need no network) run by `go test`. `examples/` holds programs
-built by `go vet ./...` against the public API only.
+built by `go vet ./...` against the public API only, mirroring the Swift
+port's: `fetch-interface`, `import-project`, `list-devices`, `watch-state`,
+`switch-light`, `run-scene`, `set-thermostat`. User documentation follows
+the Swift port too: README.md with the quick start, and `site/` (landing
+page, Getting Started) on GitHub Pages; the reference is pkg.go.dev, not
+hosted. `scripts/check-site-links.py` and `scripts/check-doc-snippets.py`
+keep both honest in the gate.
 
 ## 11. Go traps (porting-prompt §7)
 

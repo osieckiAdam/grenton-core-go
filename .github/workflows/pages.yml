@@ -1,0 +1,32 @@
+name: pages
+# Publishes the documentation site (site/, the landing page and Getting
+# Started) to GitHub Pages on every push to main. (A tag pushed by the
+# release workflow's token triggers no workflow, so the tag cannot be the
+# trigger.) The API reference is pkg.go.dev, built from the doc comments;
+# nothing of it is hosted here. Every link of the site is relative, so it
+# works under the project's base path /grenton-core-go/.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency: { group: pages, cancel-in-progress: true }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/docs.sh build
+      - run: scripts/check-site-links.py
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

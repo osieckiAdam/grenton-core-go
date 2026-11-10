@@ -149,8 +149,8 @@ func TestUnknownOperationHandlerFailsTheCase(t *testing.T) {
 // whose observation equals its expectation.
 func TestStaleSkipIsDetected(t *testing.T) {
 	expected := map[string]any{"outcome": "reject"}
-	a, _ := normalize(expected)
-	b, _ := normalize(reject)
+	a, _ := normalizeJSON(expected)
+	b, _ := normalizeJSON(reject)
 	if firstDifference(a, b, "$") != "" {
 		t.Fatal("a passing case must compare equal, so that its skip is reported as stale")
 	}

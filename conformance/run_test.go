@@ -117,11 +117,11 @@ func runCase(s *suite, c suiteCase) (diff string, observed, expected any, err er
 		}
 		got = map[string]any{"outcome": "error", "code": errorCode(err)}
 	}
-	observed, err = normalize(got)
+	observed, err = normalizeJSON(got)
 	if err != nil {
 		return "", nil, nil, runnerErr("observation does not serialize: %v", err)
 	}
-	expected, _ = normalize(dropDecimals(c.Expect))
+	expected, _ = normalizeJSON(dropDecimals(c.Expect))
 	return firstDifference(expected, observed, "$"), observed, expected, nil
 }
 
@@ -133,9 +133,9 @@ func ok(value map[string]any) map[string]any {
 
 var reject = map[string]any{"outcome": "reject"}
 
-// normalize round-trips a value through JSON so that observations built
+// normalizeJSON round-trips a value through JSON so that observations built
 // from Go values compare with decoded expectations.
-func normalize(v any) (any, error) {
+func normalizeJSON(v any) (any, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
