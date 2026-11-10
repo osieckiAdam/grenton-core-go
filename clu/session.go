@@ -505,7 +505,7 @@ func (c *core) ensureSocket() {
 	case err != nil:
 		c.log.Error("opening the UDP socket failed", "err", err)
 	case c.state == StateStopped || c.sock != nil:
-		s.Close()
+		c.closing = append(c.closing, s) // closed by unlock, outside the mutex
 	default:
 		// A new socket gets its own three tries (spec §5.4.5).
 		c.pingTimeouts = 0
