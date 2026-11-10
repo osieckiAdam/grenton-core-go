@@ -61,7 +61,7 @@ call `Stop`.
 ## Conformance
 
 Suite 0.15.0, all six profiles (`stateless`, `mapping`, `project`,
-`session`, `provisioning`, `entities`), 383 cases, no skips
+`session`, `provisioning`, `entities`), 391 cases, no skips
 (`conformance/port.json`). The session scenarios run with an exact idle
 barrier, 20 times under the race detector in the gate.
 
