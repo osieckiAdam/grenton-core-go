@@ -91,6 +91,10 @@ type Config struct {
 	FrameLimit int
 	// Activity is a test hook that observes the session's runnable work.
 	Activity Activity
+	// OnReport, when set, receives every report synchronously and in
+	// order, before the Reports streams do: a System feeds its store with
+	// it. It must not block or call back into the session.
+	OnReport func(Report)
 }
 
 // Session is the connection to one CLU (spec §5.4): one UDP socket for
@@ -216,6 +220,7 @@ type core struct {
 	pingInterval     time.Duration
 	registerInterval time.Duration
 	frameLimit       int
+	onReport         func(Report)
 	t                tracker
 	keepAlive        string
 	gate             gate
@@ -259,7 +264,7 @@ func newCore(cfg Config) *core {
 		clu: cfg.CLU, cipher: cfg.Cipher, transport: cfg.Transport, clock: cfg.Clock,
 		random: randomSource(cfg.Random), log: cfg.Logger,
 		timeout: cfg.ResponseTimeout, pingInterval: cfg.PingInterval, registerInterval: cfg.RegisterInterval,
-		frameLimit: cfg.FrameLimit, t: tracker{cfg.Activity},
+		frameLimit: cfg.FrameLimit, onReport: cfg.OnReport, t: tracker{cfg.Activity},
 		subs: map[int64][]model.ValueRef{}, next: 1, pending: map[string]*pendingRequest{},
 		reportSubs: map[int]chan Report{}, stateSubs: map[int]chan struct{}{}, run: &sync.WaitGroup{},
 	}
@@ -1124,6 +1129,9 @@ func (c *core) subscribe() (<-chan Report, func()) {
 // publishLocked delivers a report to every stream; a full stream drops its
 // oldest report.
 func (c *core) publishLocked(r Report) {
+	if c.onReport != nil {
+		c.onReport(r)
+	}
 	for _, ch := range c.reportSubs {
 		for {
 			select {

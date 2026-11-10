@@ -164,6 +164,8 @@ type Socket struct {
 	t      *Transport
 	Serial int
 	R      clu.Receiver
+	Host   string // where the session opened it
+	Port   int
 	mu     sync.Mutex
 	closed bool
 }
@@ -171,7 +173,7 @@ type Socket struct {
 func (t *Transport) Open(host string, port int, r clu.Receiver) (clu.Socket, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	s := &Socket{t: t, Serial: len(t.sockets) + 1, R: r}
+	s := &Socket{t: t, Serial: len(t.sockets) + 1, R: r, Host: host, Port: port}
 	t.sockets = append(t.sockets, s)
 	return s, nil
 }
@@ -217,4 +219,11 @@ func (t *Transport) TakeSent() (Sent, bool) {
 	first := t.outbox[0]
 	t.outbox = t.outbox[1:]
 	return first, true
+}
+
+// Sockets lists every socket opened so far.
+func (t *Transport) Sockets() []*Socket {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]*Socket(nil), t.sockets...)
 }
