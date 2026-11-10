@@ -5,6 +5,22 @@ the Swift port. Each item: the section, the problem, what Swift does, what
 Go does, and a proposal. Nothing here changes the spec by itself; the
 proposals go through the spec repository's change flow.
 
+## Outcome
+
+Decided with the owner and a second review before 0.15.0 was released,
+and folded into spec 0.15.0:
+
+| Item | Decision |
+|---|---|
+| 1 | accepted: oracle fixed, case `clus-used-by-channels-and-click-actions` |
+| 2 | changed: an unpaired surrogate is `invalidData` (not U+FFFD) |
+| 3 | changed: UTF-8 only; UTF-16 and any other encoding are `invalidData` |
+| 4, 5, 6, 7, 8 | declined: the files come from Object Manager, which does not write them |
+| 9 | accepted: scenario `an-answered-ping-resets-the-timeout-streak` |
+| 10, 13 | in the spec's `docs/implementing.md`, not normative |
+| 11 | accepted: §5.4.1 item 4, step `failSend` |
+| 12 | accepted: §5.4.5, scenario `concurrent-pings-share-one-attempt` |
+
 ## 1. §4.5.4: which references count as "used" by an interface
 
 **Problem.** §4.5.4 puts into `clus` the CLUs referenced by "the `cluId` of

@@ -54,12 +54,16 @@ func TestValues(t *testing.T) {
 	}
 }
 
-func TestUnpairedSurrogateIsReplacementCharacter(t *testing.T) {
-	v, err := Parse([]byte(`["\ud800x", "\udc00"]`))
-	if err != nil {
-		t.Fatal(err)
+// A surrogate pair is one character; half a pair is invalid (spec §4.5.1
+// item 5).
+func TestSurrogates(t *testing.T) {
+	v, err := Parse([]byte(`"\ud83c\udf21"`))
+	if err != nil || v != "\U0001F321" {
+		t.Fatalf("pair: got %q, %v", v, err)
 	}
-	if l := v.([]any); l[0] != "�x" || l[1] != "�" {
-		t.Fatalf("got %q", l)
+	for _, in := range []string{`"\ud800"`, `"\ud800x"`, `"\udc00"`, `"\ud800\u0041"`, `"\ud800\ud800"`} {
+		if _, err := Parse([]byte(in)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: got %v, want ErrInvalid", in, err)
+		}
 	}
 }

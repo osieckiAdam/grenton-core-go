@@ -21,10 +21,6 @@ import (
 // about ten levels).
 const MaxDepth = 64
 
-// MaxValues bounds the values of one document: a decoded tree costs far
-// more memory than its text (spec feedback §4).
-const MaxValues = 2_000_000
-
 // ErrInvalid is every parse error.
 var ErrInvalid = errors.New("invalid strict JSON")
 
@@ -58,10 +54,9 @@ type frame struct {
 }
 
 type parser struct {
-	s      []byte
-	i      int
-	stack  []*frame
-	values int
+	s     []byte
+	i     int
+	stack []*frame
 }
 
 func (p *parser) space() {
@@ -81,9 +76,6 @@ func (p *parser) value() (any, error) {
 		p.space()
 		if p.i >= len(p.s) {
 			return nil, invalid("unexpected end")
-		}
-		if p.values++; p.values > MaxValues {
-			return nil, invalid("more than %d values", MaxValues)
 		}
 		var v any
 		switch c := p.s[p.i]; {
@@ -316,10 +308,10 @@ func (p *parser) str() (string, error) {
 			if err != nil {
 				return "", err
 			}
-			// An unpaired surrogate escape is not among the errors of
-			// §4.5.1 item 5; it becomes U+FFFD (a Go string cannot hold it).
 			if utf16.IsSurrogate(r) {
-				r = p.lowSurrogate(r)
+				if r, err = p.lowSurrogate(r); err != nil {
+					return "", err
+				}
 			}
 			out = utf8.AppendRune(out, r)
 		default:
@@ -328,22 +320,22 @@ func (p *parser) str() (string, error) {
 	}
 }
 
-// lowSurrogate pairs a high surrogate with a following \uDC00–\uDFFF
-// escape, or returns U+FFFD and leaves the input where it was.
-func (p *parser) lowSurrogate(high rune) rune {
+// lowSurrogate pairs a high surrogate with the \uDC00–\uDFFF escape that
+// must follow it; an unpaired surrogate is invalid (spec §4.5.1 item 5).
+func (p *parser) lowSurrogate(high rune) (rune, error) {
 	if high >= 0xDC00 || len(p.s)-p.i < 6 || p.s[p.i] != '\\' || p.s[p.i+1] != 'u' {
-		return utf8.RuneError
+		return 0, invalid("unpaired surrogate \\u%04X", high)
 	}
-	save := p.i
 	p.i += 2
 	low, err := p.hex4()
-	if err == nil {
-		if r := utf16.DecodeRune(high, low); r != utf8.RuneError {
-			return r
-		}
+	if err != nil {
+		return 0, err
 	}
-	p.i = save
-	return utf8.RuneError
+	r := utf16.DecodeRune(high, low)
+	if r == utf8.RuneError {
+		return 0, invalid("unpaired surrogate \\u%04X", high)
+	}
+	return r, nil
 }
 
 func (p *parser) hex4() (rune, error) {

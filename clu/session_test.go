@@ -1,8 +1,8 @@
 package clu_test
 
 // The session's own tests, for what the conformance suite does not cover
-// (spec §9.5 item 8): resource release, abandoned sessions, the real UDP
-// transports, and a rule the suite has no scenario for.
+// (spec §9.5 item 8): resource release, abandoned sessions and the real UDP
+// transports.
 
 import (
 	"net"
@@ -106,37 +106,6 @@ func (h *harness) start() *clutest.Socket {
 	h.reply(frame, s, "1")
 	h.wait(done)
 	return s
-}
-
-// pingTimesOut sends a ping and lets it time out.
-func (h *harness) pingTimesOut() {
-	done := h.async(func() { h.session.Ping() })
-	h.sent()
-	h.clock.Advance(clu.DefaultResponseTimeout)
-	h.wait(done)
-}
-
-// A successful ping resets the streak of unanswered pings (spec §5.4.5):
-// two timeouts, a reply, two timeouts leave the socket open. The suite has
-// no scenario for this (docs/spec-feedback.md).
-func TestAnsweredPingResetsTheTimeoutStreak(t *testing.T) {
-	h := newHarness(t)
-	defer h.session.Stop()
-	s := h.start()
-	h.pingTimesOut()
-	h.pingTimesOut()
-	done := h.async(func() { h.session.Ping() })
-	frame, _ := h.sent()
-	h.reply(frame, s, "1")
-	h.wait(done)
-	h.pingTimesOut()
-	h.pingTimesOut()
-	if s.IsClosed() {
-		t.Fatal("the socket was replaced although a ping was answered in between")
-	}
-	if n := h.session.Diagnostics().ConsecutivePingTimeouts; n != 2 {
-		t.Fatalf("streak %d, want 2", n)
-	}
 }
 
 // waitGoroutines polls until the goroutine count is back to at most n.

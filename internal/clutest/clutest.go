@@ -168,6 +168,7 @@ type Socket struct {
 	Port   int
 	mu     sync.Mutex
 	closed bool
+	reject bool // the next Send fails at once
 }
 
 func (t *Transport) Open(host string, port int, r clu.Receiver) (clu.Socket, error) {
@@ -180,15 +181,27 @@ func (t *Transport) Open(host string, port int, r clu.Receiver) (clu.Socket, err
 
 func (s *Socket) Send(data []byte) error {
 	s.mu.Lock()
-	closed := s.closed
+	closed, reject := s.closed, s.reject
+	s.reject = false
 	s.mu.Unlock()
 	if closed {
 		return errors.New("closed")
+	}
+	if reject {
+		return errors.New("sendto: can't assign requested address")
 	}
 	s.t.mu.Lock()
 	s.t.outbox = append(s.t.outbox, Sent{s, append([]byte(nil), data...)})
 	s.t.mu.Unlock()
 	return nil
+}
+
+// RejectNextSend makes the next Send fail at once, as after the local
+// address is gone; the datagram is not recorded as sent.
+func (s *Socket) RejectNextSend() {
+	s.mu.Lock()
+	s.reject = true
+	s.mu.Unlock()
 }
 
 func (s *Socket) Close() error {

@@ -282,6 +282,13 @@ func (sc *scenario) perform(step map[string]any) error {
 		}
 		s.R.Closed(errors.New("the transport failed"))
 		return sc.act.Idle()
+	case step["failSend"] != nil:
+		s, err := sc.labeled(step["failSend"])
+		if err != nil {
+			return err
+		}
+		s.RejectNextSend()
+		return sc.act.Idle()
 	}
 	return runnerErr("unknown step %v", step)
 }

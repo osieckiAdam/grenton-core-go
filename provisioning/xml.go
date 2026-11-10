@@ -3,16 +3,10 @@ package provisioning
 import (
 	"bytes"
 	"encoding/xml"
-	"errors"
 	"io"
 	"strings"
-	"unicode/utf16"
+	"unicode/utf8"
 )
-
-// maxElements bounds a document's elements: the tree costs far more memory
-// than the bytes it came from, and real system.xml files have well under a
-// million (spec feedback §4).
-const maxElements = 1_000_000
 
 // xmlElement is a parsed element: the minimal tree §4.5 reads.
 type xmlElement struct {
@@ -40,26 +34,19 @@ type xmlDoc struct {
 	resolved map[*xmlElement]*xmlElement // memo: each chain is walked once
 }
 
-// parseXML reads a project document: well-formed, no DTD in any encoding,
-// UTF-8 or UTF-16 (spec §4.5.1 item 4), ids unique.
+// parseXML reads a project document: UTF-8, well-formed, no DTD, ids
+// unique (spec §4.5.1 items 4 and 6).
 func parseXML(data []byte) (*xmlDoc, error) {
 	text, err := xmlText(data)
 	if err != nil {
 		return nil, err
 	}
+	// Without a CharsetReader the decoder fails on any declared encoding
+	// other than UTF-8, in any letter case.
 	dec := xml.NewDecoder(bytes.NewReader(text))
 	dec.Strict = true
-	dec.CharsetReader = func(charset string, input io.Reader) (io.Reader, error) {
-		// The text is UTF-8 by now: a UTF-16 document was transcoded.
-		switch strings.ToLower(charset) {
-		case "utf-16", "utf-16le", "utf-16be":
-			return input, nil
-		}
-		return nil, errors.New("unsupported encoding " + charset)
-	}
 	doc := &xmlDoc{byID: map[string]*xmlElement{}, resolved: map[*xmlElement]*xmlElement{}}
 	var stack []*xmlElement
-	elements := 0
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -75,9 +62,6 @@ func parseXML(data []byte) (*xmlDoc, error) {
 			}
 			return nil, invalidData("xml: a markup declaration")
 		case xml.StartElement:
-			if elements++; elements > maxElements {
-				return nil, invalidData("xml: more than %d elements", maxElements)
-			}
 			e := &xmlElement{name: t.Name.Local, attrs: map[string]string{}}
 			for _, a := range t.Attr {
 				e.attrs[a.Name.Local] = a.Value
@@ -115,26 +99,15 @@ func parseXML(data []byte) (*xmlDoc, error) {
 	return doc, nil
 }
 
-// xmlText returns the document as UTF-8: a UTF-8 BOM is dropped, a UTF-16
-// document (by its BOM) is transcoded.
+// xmlText returns the document without a UTF-8 BOM; a UTF-16 BOM or
+// invalid UTF-8 is invalidData (spec §4.5.1 item 4).
 func xmlText(data []byte) ([]byte, error) {
-	switch {
-	case bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}):
-		return data[3:], nil
-	case bytes.HasPrefix(data, []byte{0xFF, 0xFE}), bytes.HasPrefix(data, []byte{0xFE, 0xFF}):
-		body := data[2:]
-		if len(body)%2 != 0 {
-			return nil, invalidData("xml: odd-length UTF-16")
-		}
-		units := make([]uint16, len(body)/2)
-		for i := range units {
-			if data[0] == 0xFF {
-				units[i] = uint16(body[2*i]) | uint16(body[2*i+1])<<8
-			} else {
-				units[i] = uint16(body[2*i])<<8 | uint16(body[2*i+1])
-			}
-		}
-		return []byte(string(utf16.Decode(units))), nil
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	if bytes.HasPrefix(data, []byte{0xFF, 0xFE}) || bytes.HasPrefix(data, []byte{0xFE, 0xFF}) {
+		return nil, invalidData("xml: UTF-16, not UTF-8")
+	}
+	if !utf8.Valid(data) {
+		return nil, invalidData("xml: invalid UTF-8")
 	}
 	return data, nil
 }
