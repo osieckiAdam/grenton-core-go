@@ -2,7 +2,7 @@
 
 The port's version is the spec version it implements.
 
-## 0.15.0 — unreleased
+## 0.15.0 — 2026-11-10
 
 First release: spec 0.15.0, suite 0.15.0, all six profiles (391 cases, no
 skips).
