@@ -18,7 +18,8 @@ const maxEntries = 10_000
 // checked against the central directory.
 type archive struct {
 	*zip.Reader
-	data []byte
+	data    []byte
+	headers map[*zip.File]int64 // local header offsets; nil when not readable here
 }
 
 // openZip lists an archive's central directory. Entry names are never used
@@ -31,7 +32,46 @@ func openZip(data []byte) (*archive, error) {
 	if len(r.File) > maxEntries {
 		return nil, invalidData("more than %d archive entries", maxEntries)
 	}
-	return &archive{Reader: r, data: data}, nil
+	a := &archive{Reader: r, data: data}
+	if offsets := localHeaderOffsets(data); len(offsets) == len(r.File) {
+		a.headers = make(map[*zip.File]int64, len(offsets))
+		for i, f := range r.File {
+			a.headers[f] = offsets[i]
+		}
+	}
+	return a, nil
+}
+
+// localHeaderOffsets reads the central directory's local header offsets, in
+// entry order. It returns nil for a ZIP64 archive or one it cannot read; an
+// archive that large is past every limit here anyway.
+func localHeaderOffsets(data []byte) []int64 {
+	const eocdLen = 22
+	start := len(data) - eocdLen - 0xFFFF
+	if start < 0 {
+		start = 0
+	}
+	eocd := bytes.LastIndex(data[start:], []byte{0x50, 0x4b, 0x05, 0x06})
+	if eocd < 0 || start+eocd+eocdLen > len(data) {
+		return nil
+	}
+	e := data[start+eocd:]
+	count := int(binary.LittleEndian.Uint16(e[10:]))
+	pos := int64(binary.LittleEndian.Uint32(e[16:]))
+	if count == 0xFFFF || pos == 0xFFFFFFFF {
+		return nil
+	}
+	offsets := make([]int64, 0, count)
+	for range count {
+		if pos < 0 || pos+46 > int64(len(data)) || binary.LittleEndian.Uint32(data[pos:]) != 0x02014b50 {
+			return nil
+		}
+		h := data[pos:]
+		offsets = append(offsets, int64(binary.LittleEndian.Uint32(h[42:])))
+		pos += 46 + int64(binary.LittleEndian.Uint16(h[28:])) + int64(binary.LittleEndian.Uint16(h[30:])) +
+			int64(binary.LittleEndian.Uint16(h[32:]))
+	}
+	return offsets
 }
 
 // readEntry inflates an entry, counting the bytes actually produced and
@@ -65,31 +105,20 @@ func (a *archive) readEntry(f *zip.File, limit int64) ([]byte, error) {
 // data. With a data descriptor (flag bit 3) the local fields may be zero
 // and the descriptor's values are archive/zip's to check.
 func (a *archive) checkLocalHeader(f *zip.File, data []byte) error {
-	dataOffset, err := f.DataOffset()
-	if err != nil {
-		return invalidData("%s: %v", f.Name, err)
-	}
-	// The header is 30 bytes, the name and an extra field of unknown length.
-	for extra := int64(0); extra <= 0xFFFF; extra++ {
-		h := dataOffset - 30 - int64(len(f.Name)) - extra
-		if h < 0 {
-			break
-		}
-		hdr := a.data[h : h+30]
-		if binary.LittleEndian.Uint32(hdr) != 0x04034b50 || int64(binary.LittleEndian.Uint16(hdr[28:])) != extra {
-			continue
-		}
-		if binary.LittleEndian.Uint16(hdr[6:])&0x8 != 0 {
-			return nil
-		}
-		crc, size := binary.LittleEndian.Uint32(hdr[14:]), binary.LittleEndian.Uint32(hdr[22:])
-		if size == 0xFFFFFFFF { // ZIP64: the size is in the extra field
-			return nil
-		}
-		if crc != crc32.ChecksumIEEE(data) || uint64(size) != uint64(len(data)) {
-			return invalidData("%s: size or CRC-32 differs from its local header", f.Name)
-		}
+	h, known := a.headers[f]
+	if !known {
 		return nil
 	}
-	return invalidData("%s: no local header", f.Name)
+	if h < 0 || h+30 > int64(len(a.data)) || binary.LittleEndian.Uint32(a.data[h:]) != 0x04034b50 {
+		return invalidData("%s: no local header", f.Name)
+	}
+	hdr := a.data[h : h+30]
+	if binary.LittleEndian.Uint16(hdr[6:])&0x8 != 0 {
+		return nil
+	}
+	crc, size := binary.LittleEndian.Uint32(hdr[14:]), binary.LittleEndian.Uint32(hdr[22:])
+	if size != 0xFFFFFFFF && (crc != crc32.ChecksumIEEE(data) || uint64(size) != uint64(len(data))) {
+		return invalidData("%s: size or CRC-32 differs from its local header", f.Name)
+	}
+	return nil
 }
