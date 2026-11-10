@@ -3,8 +3,11 @@ name: release
 # implements: the tag is v + the suiteVersion of conformance/port.json.
 # It fails when that version is already tagged — a port-only fix after a
 # tag needs a spec bump, because the port's version is the spec's. A merge
-# that touches only docs/, README.md, CLAUDE.md or .github/ is not a
-# release and needs no tag.
+# that touches only the documentation (docs/, site/, README.md, CLAUDE.md),
+# the workflows (.github/), the examples (examples/) or the scripts
+# (scripts/) is not a release and needs no tag; the site publishes from
+# main anyway (pages.yml). What a tag resolves for a user, the library
+# packages, their tests and the vendored spec, is a release.
 on:
   push:
     branches: [main]
@@ -20,7 +23,13 @@ jobs:
       - name: Is this a release?
         id: scope
         run: |
-          changed=$(git diff --name-only HEAD~1 HEAD | grep -vE '^(docs/|README.md|CLAUDE.md|\.github/)' || true)
+          # A root commit (main's first push) has no parent: all of it is new.
+          if git rev-parse -q --verify HEAD~1 >/dev/null; then
+            files=$(git diff --name-only HEAD~1 HEAD)
+          else
+            files=$(git ls-tree -r --name-only HEAD)
+          fi
+          changed=$(printf '%s\n' "$files" | grep -vE '^(docs/|site/|examples/|scripts/|README\.md$|CLAUDE\.md$|\.github/)' || true)
           echo "release=$([ -n "$changed" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
       - name: Tag the version
         if: steps.scope.outputs.release == 'yes'
