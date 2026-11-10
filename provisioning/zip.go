@@ -43,8 +43,9 @@ func openZip(data []byte) (*archive, error) {
 }
 
 // localHeaderOffsets reads the central directory's local header offsets, in
-// entry order. It returns nil for a ZIP64 archive or one it cannot read; an
-// archive that large is past every limit here anyway.
+// entry order; nil when it cannot (a ZIP64 directory, a damaged record).
+// checkLocalHeader then fails closed, and confirms every offset against
+// archive/zip's own reading of the entry.
 func localHeaderOffsets(data []byte) []int64 {
 	const eocdLen = 22
 	start := len(data) - eocdLen - 0xFFFF
@@ -102,17 +103,22 @@ func (a *archive) readEntry(f *zip.File, limit int64) ([]byte, error) {
 }
 
 // checkLocalHeader compares the local file header of f with the inflated
-// data. With a data descriptor (flag bit 3) the local fields may be zero
-// and the descriptor's values are archive/zip's to check.
+// data. It fails closed: the header must be the one archive/zip read (the
+// same name, and its data starting at f.DataOffset). With a data
+// descriptor (flag bit 3) the local fields may be zero and the
+// descriptor's values are archive/zip's to check.
 func (a *archive) checkLocalHeader(f *zip.File, data []byte) error {
 	h, known := a.headers[f]
-	if !known {
-		return nil
-	}
-	if h < 0 || h+30 > int64(len(a.data)) || binary.LittleEndian.Uint32(a.data[h:]) != 0x04034b50 {
-		return invalidData("%s: no local header", f.Name)
+	if !known || h < 0 || h+30 > int64(len(a.data)) || binary.LittleEndian.Uint32(a.data[h:]) != 0x04034b50 {
+		return invalidData("%s: no readable local header", f.Name)
 	}
 	hdr := a.data[h : h+30]
+	nameLen, extraLen := int64(binary.LittleEndian.Uint16(hdr[26:])), int64(binary.LittleEndian.Uint16(hdr[28:]))
+	dataOffset, err := f.DataOffset()
+	if err != nil || h+30+nameLen > int64(len(a.data)) || string(a.data[h+30:h+30+nameLen]) != f.Name ||
+		h+30+nameLen+extraLen != dataOffset {
+		return invalidData("%s: the local header does not match the central directory", f.Name)
+	}
 	if binary.LittleEndian.Uint16(hdr[6:])&0x8 != 0 {
 		return nil
 	}
