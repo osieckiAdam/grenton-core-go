@@ -113,3 +113,31 @@ language may allocate without bound.
 
 **Proposal.** Note that `|precision| > 400` behaves as Python does, or
 reject a widget whose precision is outside, say, −20…20.
+
+## 9. Suite: no scenario for "a successful ping resets the timeout streak"
+
+**Problem.** §5.4.5: "a successful ping resets it". A mutation of the Go
+session that never resets the counter passes all 51 scenarios:
+`ping-timeouts-count-per-socket` and `three-ping-timeouts-replace-the-main-socket`
+only use unbroken streaks.
+
+**Go.** Tests it itself (`clu/session_test.go`,
+`TestAnsweredPingResetsTheTimeoutStreak`).
+
+**Proposal.** A scenario `an-answered-ping-resets-the-streak`: two
+timeouts, one reply, two timeouts, `expectQuiet` (no new socket), then a
+third timeout closes `@main`.
+
+## 10. conformance.md §4b: the barrier can be exact; say how
+
+**Observation.** The Go runner has no real-time quiet window. The session
+reports its runnable goroutines through a test hook (`clu.Activity`), the
+runner delivers datagrams and fires timers synchronously, and "count = 0"
+is the barrier. 51 scenarios run 20 times under the race detector in about
+2 s; four mutations (ping interval, chunk number reuse, timeout-streak
+reset, …) were checked against it.
+
+**Proposal.** In §4b, describe this as the recommended barrier (an
+activity count over every park point of the session), with the 200 ms
+window as the fallback. It also belongs in `docs/implementing.md` under
+"The session barrier".
