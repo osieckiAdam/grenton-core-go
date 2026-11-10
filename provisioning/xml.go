@@ -15,6 +15,7 @@ type xmlElement struct {
 	attrs    map[string]string
 	children []*xmlElement
 	text     string // the character data before the first child element
+	buf      strings.Builder
 }
 
 // child returns the first direct child named name.
@@ -29,8 +30,9 @@ func (e *xmlElement) child(name string) *xmlElement {
 
 // xmlDoc is a document with its id index (spec §4.5.1 item 6).
 type xmlDoc struct {
-	root *xmlElement
-	byID map[string]*xmlElement
+	root     *xmlElement
+	byID     map[string]*xmlElement
+	resolved map[*xmlElement]*xmlElement // memo: each chain is walked once
 }
 
 // parseXML reads a project document: well-formed, no DTD in any encoding,
@@ -50,7 +52,7 @@ func parseXML(data []byte) (*xmlDoc, error) {
 		}
 		return nil, errors.New("unsupported encoding " + charset)
 	}
-	doc := &xmlDoc{byID: map[string]*xmlElement{}}
+	doc := &xmlDoc{byID: map[string]*xmlElement{}, resolved: map[*xmlElement]*xmlElement{}}
 	var stack []*xmlElement
 	for {
 		tok, err := dec.Token()
@@ -88,10 +90,13 @@ func parseXML(data []byte) (*xmlDoc, error) {
 			}
 			stack = append(stack, e)
 		case xml.EndElement:
+			e := stack[len(stack)-1]
+			e.text = e.buf.String()
+			e.buf = strings.Builder{}
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if n := len(stack); n > 0 && len(stack[n-1].children) == 0 {
-				stack[n-1].text += string(t)
+				stack[n-1].buf.Write(t)
 			}
 		}
 	}
@@ -126,22 +131,33 @@ func xmlText(data []byte) ([]byte, error) {
 }
 
 // resolve follows reference="…" to the element with that id; a missing
-// target or a cycle is invalidData (spec §4.5.1 item 6).
+// target or a cycle is invalidData (spec §4.5.1 item 6). Results are
+// memoized, so every chain is walked once however often it is read.
 func (d *xmlDoc) resolve(e *xmlElement) (*xmlElement, error) {
-	seen := map[string]bool{}
-	for e != nil {
-		target, has := e.attrs["reference"]
+	var chain []*xmlElement
+	onChain := map[*xmlElement]bool{}
+	cur := e
+	for {
+		if r, done := d.resolved[cur]; done {
+			cur = r
+			break
+		}
+		target, has := cur.attrs["reference"]
 		if !has {
-			return e, nil
+			break
 		}
 		next, ok := d.byID[target]
-		if !ok || seen[target] {
+		if !ok || onChain[next] || next == cur {
 			return nil, invalidData("xml: reference %q has no target or is a cycle", target)
 		}
-		seen[target] = true
-		e = next
+		chain = append(chain, cur)
+		onChain[cur] = true
+		cur = next
 	}
-	return nil, nil
+	for _, c := range chain {
+		d.resolved[c] = cur
+	}
+	return cur, nil
 }
 
 // child is the first direct child named name, resolved; nil when absent.
