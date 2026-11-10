@@ -12,6 +12,9 @@ var registry = map[string]operation{}
 
 // errorCode projects the port's errors onto the codes of conformance.md §2.
 func errorCode(err error) string {
+	if code := errorCodeOf(err); code != "" {
+		return code
+	}
 	return fmt.Sprintf("unmapped: %v", err)
 }
 
