@@ -194,3 +194,6 @@ func PythonRepr(v float64) string {
 	}
 	return sign + out + "e" + expSign + expDigits
 }
+
+// PowerOfTen is 10^n, a slider's step for n = −precision.
+func PowerOfTen(n int) float64 { return math.Pow10(n) }
