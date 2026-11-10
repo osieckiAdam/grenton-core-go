@@ -1,0 +1,26 @@
+name: check
+# The gate every pull request passes before it may merge into main: the
+# same scripts/check.sh the pre-push hook runs, on Linux and macOS, at the
+# toolchain floor and at the current release.
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ["1.26.x", "stable"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - uses: actions/setup-go@v5
+        with: { go-version: "${{ matrix.go }}" }
+      - name: Declare no installation (CI has no interface archive)
+        run: git config grenton.interface none
+      - run: scripts/check.sh

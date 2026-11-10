@@ -1,0 +1,33 @@
+name: release
+# Every merge into main is a release of the spec version the port
+# implements: the tag is v + the suiteVersion of conformance/port.json.
+# It fails when that version is already tagged — a port-only fix after a
+# tag needs a spec bump, because the port's version is the spec's. A merge
+# that touches only docs/, README.md, CLAUDE.md or .github/ is not a
+# release and needs no tag.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency: { group: release }
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Is this a release?
+        id: scope
+        run: |
+          changed=$(git diff --name-only HEAD~1 HEAD | grep -vE '^(docs/|README.md|CLAUDE.md|\.github/)' || true)
+          echo "release=$([ -n "$changed" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - name: Tag the version
+        if: steps.scope.outputs.release == 'yes'
+        run: |
+          version=v$(python3 -c "import json;print(json.load(open('conformance/port.json'))['suiteVersion'])")
+          grep -q "^## ${version#v} " CHANGELOG.md || { echo "CHANGELOG.md has no heading for ${version#v}"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "$version is already tagged: a port change needs a spec version"; exit 1
+          fi
+          git tag "$version" && git push origin "$version"
